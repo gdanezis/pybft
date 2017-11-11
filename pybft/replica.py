@@ -216,7 +216,6 @@ class replica(object):
         elif xtype == self._PREPREPARE and xlen == 5:
             self.receive_preprepare(msg)
 
-
         elif xtype == self._PREPARE and xlen == 5:
             self.receive_prepare(msg)
             
@@ -231,8 +230,11 @@ class replica(object):
         v = self.view_i
         while (v,n) in self.mnv_store:
             m = self.mnv_store[(v,n)]
-            self.send_commit(m,v,n)
-            self.execute(m,v,n)
+            cond = True
+            if cond:
+                cond = self.send_commit(m,v,n)
+            if cond:
+                cond = self.execute(m,v,n)
             n += 1
 
     def action_send(self, msg):
