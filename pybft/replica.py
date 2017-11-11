@@ -17,6 +17,9 @@ class replica(object):
 
     _PREPREPARE = 1000
     _PREPARE    = 1001
+    _REPLY      = 1002
+    _REQUEST    = 1003
+    _COMMIT     = 1004
 
     def __init__(self,i, R):
         self.i = i
@@ -78,7 +81,7 @@ class replica(object):
         
         others = set()
         for mx in M: 
-            if mx[:4] == ("COMMIT", v, n, self.hash(m)):
+            if mx[:4] == (self._COMMIT, v, n, self.hash(m)):
                 if mx[4] != self.primary():
                     others.add(mx[4])
 
@@ -93,7 +96,7 @@ class replica(object):
 
         # We have already replied to the message
         if t == self.last_rep_i[c]:
-            new_reply = ("REPLY", self.view_i, t, c, self.i, last_rep_i[c])
+            new_reply = (self._REPLY, self.view_i, t, c, self.i, last_rep_i[c])
             self.out_i.add( new_reply )
         else:
             self.in_i.add( msg )
@@ -150,7 +153,7 @@ class replica(object):
         cond &= m in self.in_i
 
         # Ensure we only process once.
-        cond &= m[0] == "REQUEST"
+        cond &= m[0] == self._REQUEST
         for ms in self.in_i:
             if ms[0] == self._PREPREPARE:
                 (_, vp, np, mp, ip) = ms
@@ -163,7 +166,7 @@ class replica(object):
             self.in_i.add(p)
 
     def send_commit(self, m, v, n):
-        c = ("COMMIT", v, n, self.hash(m), self.i)
+        c = (self._COMMIT, v, n, self.hash(m), self.i)
         if self.prepared(m,v,n) and c not in self.in_i:
             self.out_i.add(c)
             self.in_i.add(c)
@@ -177,7 +180,7 @@ class replica(object):
                     if t > self.last_rep_ti[c]:
                         self.last_rep_ti[c] = t
                         self.last_rep_i[c], self.vali = None, None # EXEC
-                    rep = ("REPLY", self.view_i, t, c, self.i, self.last_rep_i[c])
+                    rep = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
                     self.out_i.add(rep)
             self.in_i.remove(m)
 
