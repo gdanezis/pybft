@@ -34,6 +34,10 @@ class replica(object):
         self.seqno_i = 0
         self.last_exec_i = 0
 
+        # Not quite the official state, but useful
+        # to schedule internal things.
+        self.mnv_store = {}
+
     # Utility functions
 
     def valid_sig(self, i, m):
@@ -73,17 +77,16 @@ class replica(object):
             M = self.in_i
 
         cond = False
-        for mx in self.in_i:
+        for mx in M:
             if mx[0] == self._PREPREPARE:
                 (_, vp, np, mp, jp) = mx
                 cond |= (np, mp) == (n, m) and (jp == self.primary(vp))
-        cond |= m in self.in_i
+        cond |= m in M
         
         others = set()
         for mx in M: 
             if mx[:4] == (self._COMMIT, v, n, self.hash(m)):
-                if mx[4] != self.primary():
-                    others.add(mx[4])
+                others.add(mx[4])
 
         cond &= len(others) >= 2*self.f + 1
         return cond
@@ -113,9 +116,9 @@ class replica(object):
         cond &= self.in_v(v)
         cond &= self.has_new_view(v)
 
-        for m in self.in_i:
-            if m[0] == self._PREPARE:
-                (_, vp, np, dp, ip) = m
+        for mx in self.in_i:
+            if mx[0] == self._PREPARE:
+                (_, vp, np, dp, ip) = mx
                 if (vp, np, ip) == (v, n, self.i):
                     cond &= (dp == self.hash(m))
 
@@ -124,6 +127,9 @@ class replica(object):
             p = (self._PREPARE, v, n, self.hash(m), self.i)
             self.in_i |= set([p, msg])
             self.out_i.add(p)
+
+            # Unofficial state
+            self.mnv_store[(v,n)] = m
         else:
             # Add the request to the received messages
             self.in_i.add(m)
@@ -165,11 +171,20 @@ class replica(object):
             self.out_i.add(p)
             self.in_i.add(p)
 
+            # Unofficial state
+            self.mnv_store[(v,n)] = m
+            return True
+        else:
+            return False
+
     def send_commit(self, m, v, n):
         c = (self._COMMIT, v, n, self.hash(m), self.i)
         if self.prepared(m,v,n) and c not in self.in_i:
             self.out_i.add(c)
             self.in_i.add(c)
+            return True
+        else:
+            return False
 
     def execute(self, m, v, n):
         if n == self.last_exec_i + 1 and self.commited(m, v, n):
@@ -182,5 +197,43 @@ class replica(object):
                         self.last_rep_i[c], self.vali = None, None # EXEC
                     rep = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
                     self.out_i.add(rep)
-            self.in_i.remove(m)
+            self.in_i.discard(m)
+            return True
+        else:
+            return False
 
+
+
+    # System's calls
+
+    def route_receive(self, msg):
+        xtype = msg[0]
+        xlen = len(msg)
+        if xtype == self._REQUEST and xlen == 4:
+            self.receive_request(msg)
+            self.send_preprepare(msg, self.view_i, self.seqno_i+1)
+
+        elif xtype == self._PREPREPARE and xlen == 5:
+            self.receive_preprepare(msg)
+
+
+        elif xtype == self._PREPARE and xlen == 5:
+            self.receive_prepare(msg)
+            
+        elif xtype == self._COMMIT and xlen == 5:
+            self.receive_commit(msg)
+
+        else:
+            pass
+
+        # Make as much progress as possible
+        n = self.last_exec_i + 1
+        v = self.view_i
+        while (v,n) in self.mnv_store:
+            m = self.mnv_store[(v,n)]
+            self.send_commit(m,v,n)
+            self.execute(m,v,n)
+            n += 1
+
+    def action_send(self, msg):
+        pass
