@@ -168,108 +168,16 @@ class replica(object):
             self.out_i.add(c)
             self.in_i.add(c)
 
-# Tests
+    def execute(self, m, v, n):
+        if n == self.last_exec_i + 1 and self.commited(m, v, n):
+            self.last_exec_i = n
+            if m != None: # TODO: check null representation
+                (_, o, t, c) = m
+                if t >= self.last_rep_ti[c]:
+                    if t > self.last_rep_ti[c]:
+                        self.last_rep_ti[c] = t
+                        self.last_rep_i[c], self.vali = None, None # EXEC
+                    rep = ("REPLY", self.view_i, t, c, self.i, self.last_rep_i[c])
+                    self.out_i.add(rep)
+            self.in_i.remove(m)
 
-def test_replica_init():
-    r = replica(0, 4)
-    
-def test_replica_request():
-    r = replica(0, 4)
-
-    request = ("REQUEST", "message", 0, 100)
-    r.receive_request(request)
-
-def test_replica_preprepare():
-    r = replica(0, 4)
-
-    request = ("REQUEST", "message", 0, 100)
-    request2 = ("REQUEST", "message2", 0, 101)
-
-    r.receive_request(request)
-    L0 = len(r.out_i)
-
-    # Make progress
-    r.send_preprepare(request, 0, 1)
-    L1 = len(r.out_i)
-    assert L1 > L0
-
-    # Cannot re-use the same seq number.
-    r.send_preprepare(request, 0, 1)
-    L2 = len(r.out_i)
-    assert L2 == L1
-
-    # Cannot re-issue the same req in the same view
-    r.send_preprepare(request, 0, 2)
-    L2 = len(r.out_i)
-    assert L2 == L1
-
-    # Cannot re-use the same seq number.
-    r.send_preprepare(request2, 0, 1)
-    L2 = len(r.out_i)
-    assert L2 == L1
-
-    # Has not received request
-    r.send_preprepare(request2, 0, 2)
-    L2 = len(r.out_i)
-    assert L2 == L1
-    
-    # Register request
-    r.receive_request(request2)
-    L0 = len(r.out_i)
-
-    # make progress
-    r.send_preprepare(request2, 0, 2)
-    L2 = len(r.out_i)
-    assert L2 > L0
-
-def test_replica_prepare():
-    r1 = replica(1, 4)
-
-    request = ("REQUEST", "message", 0, 100)
-    request2 = ("REQUEST", "message2", 0, 101)
-
-    prepr = (r1._PREPREPARE, 0, 1, request, 0)
-    prepr2 = (r1._PREPREPARE, 0, 1, request2, 0)
-
-    # prepare the first time
-    L0 = len(r1.out_i)
-    r1.receive_preprepare(prepr)
-    L1 = len(r1.out_i)
-    assert L1 > L0
-
-    # Do not prepare twice
-    L0 = len(r1.out_i)
-    r1.receive_preprepare(prepr)
-    L1 = len(r1.out_i)
-    assert L1 == L0
-
-    # Do not prepare another req at the same position
-    L0 = len(r1.out_i)
-    r1.receive_preprepare(prepr2)
-    L1 = len(r1.out_i)
-    assert L1 == L0
-
-def test_proposed():
-    r = replica(0, 4)
-
-    request = ("REQUEST", "message", 0, 100)
-    prepr = (r._PREPREPARE, 0, 1, request, 0)
-    p1 = (r._PREPARE, 0, 1, r.hash(request), 1)    
-
-    M = set([prepr, p1])
-    assert not r.prepared(request, 0, 1, M)
-    
-    p2 = (r._PREPARE, 0, 1, r.hash(request), 2)
-    M.add(  p2 )
-    assert r.prepared(request, 0, 1, M)
-
-    p3 = (r._PREPARE, 0, 1, r.hash(request), 3)
-    M.add(  p3 )
-    assert r.prepared(request, 0, 1, M)
-
-    M = set([p1, p2, p3])
-    assert not r.prepared(request, 0, 1, M)
-
-    p0 = (r._PREPARE, 0, 1, r.hash(request), 0)    
-    M = set([prepr, p0, p1])
-    assert not r.prepared(request, 0, 1, M)
