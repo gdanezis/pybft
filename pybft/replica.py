@@ -16,11 +16,13 @@ def _C(cond, msg):
 
 class replica(object):
 
-    _PREPREPARE = 1000
-    _PREPARE    = 1001
-    _REPLY      = 1002
-    _REQUEST    = 1003
-    _COMMIT     = 1004
+    _PREPREPARE = "_PREPREPARE" # 1000
+    _PREPARE    = "_PREPARE" # 1001
+    _REPLY      = "_REPLY" # 1002
+    _REQUEST    = "_REQUEST" # 1003
+    _COMMIT     = "_COMMIT" # 1004
+    _VIEWCHANGE = "_VIEWCHANGE" # 1005
+    _NEWVIEW    = "_NEWVIEW"
 
     def __init__(self,i, R):
         self.i = i
@@ -53,23 +55,30 @@ class replica(object):
         return self.view_i == v
 
     def has_new_view(self, v):
-        return v == 0 # TODO: new view messages
+        if v == 0:
+            return True
+        else:
+            for msg in self.in_i:
+                if msg[0] != self._NEWVIEW: continue
+                if msg[1] == v:
+                    return True
+            return False
 
     def hash(self, m):
         t = ("%2.2f" % m[2]).encode("utf-8")
-        bts = m[1] + b"||" + t + b"||" + m[3]
+        bts = m[1] + b"||" + t + b"||" + m[3] # TODO: fix formatting
         return sha256(bts).hexdigest()
 
     def prepared(self, m, v, n, M=None):
         if M is None:
             M = self.in_i
 
-        cond = (self._PREPREPARE, v, n, m, self.primary()) in M
+        cond = (self._PREPREPARE, v, n, m, self.primary(v)) in M
         
         others = set()
         for mx in M: 
             if mx[:4] == (self._PREPARE, v, n, self.hash(m)):
-                if mx[4] != self.primary():
+                if mx[4] != self.primary(v):
                     others.add(mx[4])
 
         cond &= len(others) >= 2*self.f
@@ -93,6 +102,10 @@ class replica(object):
 
         cond &= len(others) >= 2*self.f + 1
         return cond
+
+    def correct_view_change(self, msg, v, j):
+        (_, _, P, _) = msg
+        return P == self.compute_P(v, P)
 
 
     # Input transactions
@@ -151,6 +164,83 @@ class replica(object):
         if self.view_i >= v:
             self.in_i.add(msg)
 
+    def receive_view_change(self, msg):
+        (_, v, P, j) = msg
+        if j == self.i: return
+
+        if v >= self.view_i and self.correct_view_change(msg, v, j):
+            self.in_i.add(msg)
+
+    def receive_new_view(self, msg):
+        (_, v, X, O, N, j) = msg
+        if j == self.i: return False
+
+
+        P = set()
+
+        new_mvn = []
+        for msgx in O | N:
+            if msgx[0] != self._PREPREPARE: continue
+
+            (_, vi, ni, mi, _) = msgx
+            P.add( (self._PREPARE, v, ni, self.hash(mi), self.i) )
+            new_mvn += [(mi, v, ni)]
+
+        cond = v >= self.view_i and v > 0
+        assert cond
+
+        mergeP = set()
+        for (_, _, P, _) in X:
+            mergeP |= P
+
+        # The set O contains fresh preprepares
+        O2 = set()
+        used_ns = set()
+        for msgx in mergeP:
+            if msgx[0] != self._PREPREPARE:
+                continue
+            (_, vi,ni, mi, _) = msgx
+            new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
+            O2.add(new_prep)
+            used_ns.add(ni)
+        O2 = frozenset(O2)
+
+        cond &= O == O2
+        assert cond
+
+        # The set N contrains nulls for the non-proposed slots
+        N2 = set()
+
+        minO, maxO = 0, 0
+        if len(used_ns) > 0:
+            minO, maxO = min(used_ns), max(used_ns) + 1
+
+        for ni in range(minO, maxO):
+            if ni not in used_ns:
+                new_prep = (self._PREPREPARE, v, ni, None, self.primary(v))
+                N.add(new_prep)
+        N2 = frozenset(N2)
+
+        cond &= N == N2
+        assert cond
+
+        cond &= not self.has_new_view(v)
+        assert cond
+
+        if cond:
+            self.view_i = v
+            self.in_i |= (O | N | P)
+            self.in_i.add(msg)
+            self.out_i |= P
+
+            # Update unofficial
+            for (mi, vi, ni) in new_mvn:
+                self.mnv_store[(vi, ni)] = mi
+
+            return True
+        else:
+            return False
+
 
     # Internal transactions
 
@@ -205,6 +295,104 @@ class replica(object):
         else:
             return False
 
+    def compute_P(self, v, M=None):
+        if M is None:
+            M = self.in_i
+
+        by_ni = {}
+        for prep in M:
+            if prep[0] != self._PREPREPARE:
+                continue
+            (_, vi,ni, mi, _) = prep
+
+            if self.prepared(mi, vi, ni, M):
+                if ni not in by_ni:
+                    by_ni[ni] = prep
+                else:
+                    if by_ni[1] < vi:
+                        by_ni[n1] = prep
+
+        P = set()
+        for prep in by_ni.values():
+            P.add(prep)
+            (_, vi2,ni2, mi2, _) = prep
+
+            for mx in self.in_i: 
+                if mx[:4] == (self._PREPARE, vi2, ni2, self.hash(mi2)):
+                    if mx[4] != self.primary(vi2):
+                        P.add(mx)
+
+        return frozenset(P)
+
+
+    def send_viewchange(self, v):
+        if v == self.view_i + 1:
+            self.view_i = v
+
+            P = self.compute_P(v)
+
+            msg = (self._VIEWCHANGE, v, P, self.i)
+            self.out_i.add(msg)
+            self.in_i.add(msg)
+            return True
+        else:
+            return False
+
+    def send_newview(self, v, V):
+        cond = (self.primary(v) == self.i)
+        cond &= (v >= self.view_i and v > 0)
+        for Vi in V:
+            cond &= (Vi in self.in_i)
+        cond &= len(V) == 2 * self.f + 1
+        cond &= not self.has_new_view(v)
+        
+        who = set()
+        for Vi in V:
+            cond &= Vi[:2] == (self._VIEWCHANGE, v)
+            who.add(Vi[3])
+        
+        cond &= (len(who) == (2 * self.f + 1))
+
+        if cond:
+            mergeP = set()
+            for (_, _, P, _) in V:
+                mergeP |= P
+
+            # The set O contains fresh preprepares
+            O = set()
+            used_ns = set()
+            for msg in mergeP:
+                if msg[0] != self._PREPREPARE:
+                    continue
+                (_, vi,ni, mi, _) = msg
+                new_prep = (self._PREPREPARE, v, ni, mi, self.i)
+                O.add(new_prep)
+                used_ns.add(ni)
+            O = frozenset(O)
+
+            # The set N contrains nulls for the non-proposed slots
+            N = set()
+
+            minO, maxO = 0, 0
+            if len(used_ns) > 0:
+                minO, maxO = min(used_ns), max(used_ns) + 1
+
+            for ni in range(minO, maxO):
+                if ni not in used_ns:
+                    new_prep = (self._PREPREPARE, v, ni, None, self.i)
+                    N.add(new_prep)
+            N = frozenset(N)
+
+            m = (self._NEWVIEW, v, frozenset(V), O, N, self.i)
+            self.seqno_i = max(used_ns) if len(used_ns) > 0 else self.seqno_i
+            self.in_i.add(m)
+            self.in_i |= O
+            self.in_i |= N
+            self.out_i.add(m) # TODO clear out_i
+
+            return True
+        else:
+            return False
 
 
     # System's calls
@@ -214,8 +402,8 @@ class replica(object):
         xlen = len(msg)
         if xtype == self._REQUEST and xlen == 4:
             self.receive_request(msg)
-            self.send_preprepare(msg, self.view_i, self.seqno_i+1)
-
+            ret = self.send_preprepare(msg, self.view_i, self.seqno_i+1)
+            
         elif xtype == self._PREPREPARE and xlen == 5:
             self.receive_preprepare(msg)
 
@@ -225,8 +413,28 @@ class replica(object):
         elif xtype == self._COMMIT and xlen == 5:
             self.receive_commit(msg)
 
+        elif xtype == self._VIEWCHANGE and xlen == 4:
+            self.receive_view_change(msg)
+
+            # Gather related view changes
+            V = set()
+            for vc_msg in self.in_i:
+                if vc_msg[0] == self._VIEWCHANGE and vc_msg[1] == msg[1]:
+                    V.add(vc_msg) 
+            self.send_newview(msg[1], V)
+
+        elif xtype == self._NEWVIEW and xlen == 6:
+            ret = self.receive_new_view(msg)
+            
+            # Process again any 'hanging' requests
+            for xmsg in self.in_i:
+                if xmsg[0] != self._REQUEST: continue
+                self.route_receive(xmsg)
+
         else:
-            pass
+            print("UNKNOWN: ", msg)
+            print("UNKNOWN LEN: ", len(msg))
+            assert False
 
         # Make as much progress as possible
         n = self.last_exec_i + 1
