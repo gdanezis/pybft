@@ -3,6 +3,7 @@
 # https://www.microsoft.com/en-us/research/wp-content/uploads/2017/01/tm590.pdf
 
 from collections import defaultdict
+from hashlib import sha256
 
 NoneT = lambda: None
 
@@ -55,7 +56,9 @@ class replica(object):
         return v == 0 # TODO: new view messages
 
     def hash(self, m):
-        return m
+        t = ("%2.2f" % m[2]).encode("utf-8")
+        bts = m[1] + b"||" + t + b"||" + m[3]
+        return sha256(bts).hexdigest()
 
     def prepared(self, m, v, n, M=None):
         if M is None:
@@ -230,11 +233,8 @@ class replica(object):
         v = self.view_i
         while (v,n) in self.mnv_store:
             m = self.mnv_store[(v,n)]
-            cond = True
-            if cond:
-                cond = self.send_commit(m,v,n)
-            if cond:
-                cond = self.execute(m,v,n)
+            self.send_commit(m,v,n)
+            self.execute(m,v,n)
             n += 1
 
     def action_send(self, msg):
