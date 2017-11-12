@@ -132,9 +132,9 @@ class replica(object):
                 for xmsg in self.in_i:
                     if xmsg[0] == self._PREPREPARE and \
                        xmsg[1] == self.view_i and \
-                       xmsg[3] == self.hash(msg):
+                       xmsg[3] == msg:
 
-                       print("!!! FOUND PREPREPARE")
+                       # print("!!! FOUND PREPREPARE")
                        self.out_i.add(xmsg)
 
 
@@ -190,9 +190,7 @@ class replica(object):
         (_, v, X, O, N, j) = msg
         if j == self.i: return False
 
-
         P = set()
-
         new_mvn = []
         for msgx in O | N:
             if msgx[0] != self._PREPREPARE: continue
@@ -202,45 +200,11 @@ class replica(object):
             new_mvn += [(mi, v, ni)]
 
         cond = v >= self.view_i and v > 0
-        assert cond
-
-        mergeP = set()
-        for (_, _, P, _) in X:
-            mergeP |= P
-
-        # The set O contains fresh preprepares
-        O2 = set()
-        used_ns = set()
-        for msgx in mergeP:
-            if msgx[0] != self._PREPREPARE:
-                continue
-            (_, vi,ni, mi, _) = msgx
-            new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
-            O2.add(new_prep)
-            used_ns.add(ni)
-        O2 = frozenset(O2)
-
-        cond &= O == O2
-        assert cond
-
-        # The set N contrains nulls for the non-proposed slots
-        N2 = set()
-
-        minO, maxO = 0, 0
-        if len(used_ns) > 0:
-            minO, maxO = min(used_ns), max(used_ns) + 1
-
-        for ni in range(minO, maxO):
-            if ni not in used_ns:
-                new_prep = (self._PREPREPARE, v, ni, None, self.primary(v))
-                N.add(new_prep)
-        N2 = frozenset(N2)
-
+        
+        O2, N2, minO, maxO, used_ns = self.compute_new_view_sets(v, X)
         cond &= N == N2
-        assert cond
-
         cond &= not self.has_new_view(v)
-        assert cond
+        
 
         if cond:
             self.view_i = v
@@ -353,6 +317,39 @@ class replica(object):
         else:
             return False
 
+    def compute_new_view_sets(self, v, V):
+        mergeP = set()
+        for (_, _, P, _) in V:
+            mergeP |= P
+
+        # The set O contains fresh preprepares
+        O = set()
+        used_ns = set()
+        for msg in mergeP:
+            if msg[0] != self._PREPREPARE:
+                continue
+            (_, vi,ni, mi, _) = msg
+            new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
+            O.add(new_prep)
+            used_ns.add(ni)
+        O = frozenset(O)
+
+        # The set N contrains nulls for the non-proposed slots
+        N = set()
+
+        minO, maxO = 0, 0
+        if len(used_ns) > 0:
+            minO, maxO = min(used_ns), max(used_ns) + 1
+
+        for ni in range(minO, maxO):
+            if ni not in used_ns:
+                new_prep = (self._PREPREPARE, v, ni, None, self.primary(v))
+                N.add(new_prep)
+        N = frozenset(N)
+
+        return O, N, minO, maxO, used_ns
+
+
     def send_newview(self, v, V):
         cond = (self.primary(v) == self.i)
         cond &= (v >= self.view_i and v > 0)
@@ -369,34 +366,7 @@ class replica(object):
         cond &= (len(who) == (2 * self.f + 1))
 
         if cond:
-            mergeP = set()
-            for (_, _, P, _) in V:
-                mergeP |= P
-
-            # The set O contains fresh preprepares
-            O = set()
-            used_ns = set()
-            for msg in mergeP:
-                if msg[0] != self._PREPREPARE:
-                    continue
-                (_, vi,ni, mi, _) = msg
-                new_prep = (self._PREPREPARE, v, ni, mi, self.i)
-                O.add(new_prep)
-                used_ns.add(ni)
-            O = frozenset(O)
-
-            # The set N contrains nulls for the non-proposed slots
-            N = set()
-
-            minO, maxO = 0, 0
-            if len(used_ns) > 0:
-                minO, maxO = min(used_ns), max(used_ns) + 1
-
-            for ni in range(minO, maxO):
-                if ni not in used_ns:
-                    new_prep = (self._PREPREPARE, v, ni, None, self.i)
-                    N.add(new_prep)
-            N = frozenset(N)
+            (O, N, minO, maxO, used_ns) = self.compute_new_view_sets(v, V)
 
             m = (self._NEWVIEW, v, frozenset(V), O, N, self.i)
             self.seqno_i = max(used_ns) if len(used_ns) > 0 else self.seqno_i
@@ -436,15 +406,26 @@ class replica(object):
             for vc_msg in self.in_i:
                 if vc_msg[0] == self._VIEWCHANGE and vc_msg[1] == msg[1]:
                     V.add(vc_msg) 
-            self.send_newview(msg[1], V)
+            ret = self.send_newview(msg[1], V)
+            if ret:
+                # Process hanging requests
+
+                for xmsg in list(self.in_i):
+                    if xmsg[0] != self._REQUEST: continue
+                    # print("!!! RESEND REQ: %s" % str(xmsg))
+                    self.route_receive(xmsg)
+
 
         elif xtype == self._NEWVIEW and xlen == 6:
-            ret = self.receive_new_view(msg)
+            self.receive_new_view(msg)
+            ret = self.has_new_view(self.view_i)
             
-            # Process again any 'hanging' requests
-            for xmsg in self.in_i:
-                if xmsg[0] != self._REQUEST: continue
-                self.route_receive(xmsg)
+            if ret:
+                # Process again any 'hanging' requests
+                for xmsg in self.in_i:
+                    if xmsg[0] != self._REQUEST: continue
+                    # print("!!! RESEND REQ: %s" % str(xmsg))
+                    self.route_receive(xmsg)
 
         else:
             print("UNKNOWN: ", msg)
