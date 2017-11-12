@@ -37,10 +37,6 @@ class replica(object):
         self.seqno_i = 0
         self.last_exec_i = 0
 
-        # Not quite the official state, but useful
-        # to schedule internal things.
-        self.mnv_store = {}
-
     # Utility functions
 
     def valid_sig(self, i, m):
@@ -211,11 +207,6 @@ class replica(object):
             self.in_i |= (O | N | P)
             self.in_i.add(msg)
             self.out_i |= P
-
-            # Update unofficial
-            for (mi, vi, ni) in new_mvn:
-                self.mnv_store[(vi, ni)] = mi
-
             return True
         else:
             return False
@@ -243,8 +234,6 @@ class replica(object):
             self.out_i.add(p)
             self.in_i.add(p)
 
-            # Unofficial state
-            self.mnv_store[(v,n)] = m
             return True
         else:
             return False
@@ -442,11 +431,9 @@ class replica(object):
         all_preps = sorted(all_preps, key=lambda xmsg: xmsg[2])
 
         for (_, vx, nx, mx, _) in all_preps:
-            # v,n,m = prep[1:4]
             self.send_commit(mx,vx,nx)
             self.execute(mx,vx,nx)
-            # n += 1
-
+            
     def _debug_status(self, request):
         # First check out if the request has been received:
         print("\nPeer %s (view: %s) REQ: %s" % (self.i, self.view_i, str(request)))
