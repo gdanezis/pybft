@@ -412,9 +412,8 @@ class replica(object):
                     self.route_receive(xmsg)
 
         else:
-            print("UNKNOWN: ", msg)
-            print("UNKNOWN LEN: ", len(msg))
-            assert False
+            print("UNKNOWN type: ", msg)
+            return
 
         # Make as much progress as possible
         all_preps = []
