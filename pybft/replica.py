@@ -24,6 +24,15 @@ class replica(object):
     _VIEWCHANGE = "_VIEWCHANGE" # 1005
     _NEWVIEW    = "_NEWVIEW"
 
+    def filter_type(self, xtype, M=None):
+        if M is None:
+            M = self.in_i
+
+        for msg in M:
+            if msg[0] == xtype:
+                yield msg
+
+
     def __init__(self,i, R):
         self.i = i
         self.R = R
@@ -54,8 +63,7 @@ class replica(object):
         if v == 0:
             return True
         else:
-            for msg in self.in_i:
-                if msg[0] != self._NEWVIEW: continue
+            for msg in self.filter_type(self._NEWVIEW):
                 if msg[1] == v:
                     return True
             return False
@@ -85,10 +93,9 @@ class replica(object):
             M = self.in_i
 
         cond = False
-        for mx in M:
-            if mx[0] == self._PREPREPARE:
-                (_, vp, np, mp, jp) = mx
-                cond |= (np, mp) == (n, m) and (jp == self.primary(vp))
+        for mx in self.filter_type(self._PREPREPARE, M):
+            (_, vp, np, mp, jp) = mx
+            cond |= (np, mp) == (n, m) and (jp == self.primary(vp))
         cond |= m in M
         
         others = set()
@@ -142,11 +149,10 @@ class replica(object):
         cond &= self.in_v(v)
         cond &= self.has_new_view(v)
 
-        for mx in self.in_i:
-            if mx[0] == self._PREPARE:
-                (_, vp, np, dp, ip) = mx
-                if (vp, np, ip) == (v, n, self.i):
-                    cond &= (dp == self.hash(m))
+        for mx in self.filter_type(self._PREPARE):
+            (_, vp, np, dp, ip) = mx
+            if (vp, np, ip) == (v, n, self.i):
+                cond &= (dp == self.hash(m))
 
         if cond:
             # Send a prepare message
@@ -154,8 +160,6 @@ class replica(object):
             self.in_i |= set([p, msg])
             self.out_i.add(p)
 
-            # Unofficial state
-            self.mnv_store[(v,n)] = m
         else:
             # Add the request to the received messages
             if m != None:
@@ -188,9 +192,7 @@ class replica(object):
 
         P = set()
         new_mvn = []
-        for msgx in O | N:
-            if msgx[0] != self._PREPREPARE: continue
-
+        for msgx in self.filter_type(self._PREPREPARE, O | N):
             (_, vi, ni, mi, _) = msgx
             P.add( (self._PREPARE, v, ni, self.hash(mi), self.i) )
             new_mvn += [(mi, v, ni)]
@@ -223,10 +225,9 @@ class replica(object):
 
         # Ensure we only process once.
         cond &= m[0] == self._REQUEST
-        for ms in self.in_i:
-            if ms[0] == self._PREPREPARE:
-                (_, vp, np, mp, ip) = ms
-                cond &= ((vp, mp) != (v, m))
+        for ms in self.filter_type(self._PREPREPARE):
+            (_, vp, np, mp, ip) = ms
+            cond &= ((vp, mp) != (v, m))
 
         if cond:
             self.seqno_i = self.seqno_i + 1
@@ -268,9 +269,7 @@ class replica(object):
             M = self.in_i
 
         by_ni = {}
-        for prep in M:
-            if prep[0] != self._PREPREPARE:
-                continue
+        for prep in self.filter_type(self._PREPREPARE, M):
             (_, vi,ni, mi, _) = prep
 
             if self.prepared(mi, vi, ni, M):
@@ -314,9 +313,7 @@ class replica(object):
         # The set O contains fresh preprepares
         O = set()
         used_ns = set()
-        for msg in mergeP:
-            if msg[0] != self._PREPREPARE:
-                continue
+        for msg in self.filter_type(self._PREPREPARE, mergeP):
             (_, vi,ni, mi, _) = msg
             new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
             O.add(new_prep)
@@ -411,9 +408,7 @@ class replica(object):
             
             if ret:
                 # Process again any 'hanging' requests
-                for xmsg in self.in_i:
-                    if xmsg[0] != self._REQUEST: continue
-                    # print("!!! RESEND REQ: %s" % str(xmsg))
+                for xmsg in self.filter_type(self._REQUEST):
                     self.route_receive(xmsg)
 
         else:
