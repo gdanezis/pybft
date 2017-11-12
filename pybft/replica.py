@@ -123,6 +123,20 @@ class replica(object):
             if self.primary() != self.i:
                 self.out_i.add( msg )
 
+            ## Liveness hack. TODO: check it.
+            else: 
+                # If we are the primary, and have send a 
+                # preprepare message for this request, send it
+                # again here.
+
+                for xmsg in self.in_i:
+                    if xmsg[0] == self._PREPREPARE and \
+                       xmsg[1] == self.view_i and \
+                       xmsg[3] == self.hash(msg):
+
+                       print("!!! FOUND PREPREPARE")
+                       self.out_i.add(xmsg)
+
 
     def receive_preprepare(self, msg):
         (_, v, n, m, j) = msg
@@ -148,13 +162,14 @@ class replica(object):
             self.mnv_store[(v,n)] = m
         else:
             # Add the request to the received messages
-            self.in_i.add(m)
+            if m != None:
+                self.in_i.add(m)
 
     def receive_prepare(self, msg):
         (_, v, n, d, j) = msg
         if j == self.i: return
 
-        if j != self.primary() and self.in_v(v):
+        if j != self.primary(v) and self.in_v(v):
             self.in_i.add(msg)
 
     def receive_commit(self, msg):
@@ -437,13 +452,54 @@ class replica(object):
             assert False
 
         # Make as much progress as possible
-        n = self.last_exec_i + 1
-        v = self.view_i
-        while (v,n) in self.mnv_store:
-            m = self.mnv_store[(v,n)]
-            self.send_commit(m,v,n)
-            self.execute(m,v,n)
-            n += 1
+        all_preps = []
+        for prep in list(self.in_i):
+            if prep[0] != self._PREPREPARE: continue
+            if not (prep[1] >= self.view_i and prep[2] >= self.last_exec_i + 1): continue
+            all_preps += [ prep ]
 
-    def action_send(self, msg):
-        pass
+        all_preps = sorted(all_preps, key=lambda xmsg: xmsg[2])
+
+        for (_, vx, nx, mx, _) in all_preps:
+            # v,n,m = prep[1:4]
+            self.send_commit(mx,vx,nx)
+            self.execute(mx,vx,nx)
+            # n += 1
+
+    def _debug_status(self, request):
+        # First check out if the request has been received:
+        print("\nPeer %s (view: %s) REQ: %s" % (self.i, self.view_i, str(request)))
+        accounted = set()
+        for msg in self.in_i:
+            if msg[0] == self._PREPREPARE and msg[3] == request:
+                accounted.add( (msg[1], msg[2]) )
+                print("** %s" % (str(msg)))
+                if self.prepared(request, msg[1], msg[2]):
+                    print("        ** PREPARED **")
+
+                # How many prepeared do we have
+                for Pmsg in self.in_i:
+                    if Pmsg[0] == self._PREPARE and Pmsg[1:3] == msg[1:3]:
+                        print("        %s" % str(Pmsg))
+
+                commited = False
+                if self.commited(request, msg[1], msg[2]):
+                    print("        ** COMMITED **")
+                    commited = True
+
+                # How many prepeared do we have
+                for Pmsg in self.in_i:
+                    if Pmsg[0] == self._COMMIT and Pmsg[1:3] == msg[1:3]:
+                        print("        %s" % str(Pmsg))
+
+                if commited:
+                    if self.last_exec_i >= msg[2]:
+                        print("        ** EXECUTED (%s) **" % self.last_exec_i)
+                    else:
+                        print("        ** NOT EXECUTED (%s) **" % self.last_exec_i)
+            
+        # How many prepeared do we have
+        for Pmsg in self.in_i:
+            if Pmsg[0] == self._PREPARE and Pmsg[3] == self.hash(request):
+                if Pmsg[1:3] not in accounted:
+                    print("STRAY: %s" % str(Pmsg))
