@@ -256,7 +256,7 @@ class replica(object):
                 if t >= self.last_rep_ti[c]:
                     if t > self.last_rep_ti[c]:
                         self.last_rep_ti[c] = t
-                        self.last_rep_i[c], self.vali = None, None # EXEC
+                        self.last_rep_i[c], self.vali = None, None # TODO: EXEC
                     rep = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
                     self.out_i.add(rep)
             self.in_i.discard(m)

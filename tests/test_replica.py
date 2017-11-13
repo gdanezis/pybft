@@ -382,3 +382,128 @@ def test_view_change_full():
                     R._debug_status(req)
 
         assert len(seen_replies) == 2
+
+from collections import defaultdict
+import random
+
+class driver():
+    def __init__(self, f=1):
+        n = 3*f+1
+        self.replicas = [replica(i, n) for i in range(n)]
+
+        self.global_outs = [r.out_i for r in self.replicas]
+
+        self.seen_replies = set()
+        self.message_numbers = defaultdict(int)
+
+        self.D = []
+        self.LOG = []
+
+
+    def route_to(self):
+        # rx = replica(0,4)
+        for i, msgs in enumerate(self.global_outs):
+            Ds = []
+            for m in msgs:
+                if m[0] == replica._REQUEST:
+                    primary = self.replicas[i].primary()
+                    Ds += [(self.replicas[primary], m)]
+                elif m[0] == replica._REPLY:
+                    self.seen_replies.add(m[1:4])
+                else:
+                    Ds += [(r, m) for r in self.replicas if r.i != m[-1]]
+            self.message_numbers[i] += len(Ds)
+            self.D += Ds
+            msgs.clear()
+
+    def execute(self):
+        self.route_to()
+        while len(self.D) > 0:
+            #print("Message volume: ", len(D))
+            dest, msg = random.choice(self.D)
+            dest.route_receive(msg)
+            self.LOG += [("%s -> %s" % ( str(msg), dest.i))]
+            self.LOG += [(["V%d:%d" % (j, rep.view_i) for j,rep in enumerate(self.replicas)])]
+
+            self.D.remove((dest, msg))
+            self.route_to()
+
+def test_driver_for_f3():
+    dvr = driver(3)    
+
+    request1 = (replica._REQUEST, b"message1", 0, b"100")
+    request2 = (replica._REQUEST, b"message2", 0.5, b"101")
+
+    rand = random.choice(dvr.replicas)
+    rand.route_receive(request1)
+    rand.route_receive(request2)
+
+    dvr.execute()
+
+    assert len(dvr.seen_replies) == 2
+    # print(dvr.message_numbers)
+
+
+def test_view_change_cost():
+    for _ in range(10):
+        replicas = [ replica(i, 4) for i in range(4) ]
+        mvns = {}
+
+        # This is a massive hack: we set all the out buffers to the same
+        # one and take control of the scheduling of messages
+        global_outs = [r.out_i for r in replicas]
+
+        request1 = (replica._REQUEST, b"message1", 0, b"100")
+        request2 = (replica._REQUEST, b"message2", 0.5, b"101")
+
+        import random
+        rand = random.choice(replicas)
+        rand.route_receive(request1)
+        rand.route_receive(request2)
+
+        for i in range(1,4):
+            replicas[i].send_viewchange(1)    
+
+        seen_replies = set()
+        message_numbers = defaultdict(int)        
+
+        def route_to(msgs, i):
+            # rx = replica(0,4)
+            Dest = []
+            for m in msgs:
+                if m[0] == replica._REQUEST:
+                    primary = replicas[i].primary()
+                    Dest += [(replicas[primary], m)]
+                elif m[0] == replica._REPLY:
+                    seen_replies.add(m[1:4])
+                else:
+                    Dest += [(r, m) for r in replicas if r.i != m[-1]]
+            message_numbers[i] += len(Dest)
+            msgs.clear()
+            return Dest
+
+        D = sum([route_to(oi,i) for i,oi in enumerate(global_outs)],[]) # route_to(global_out)
+        LOG = []
+        while len(D) > 0:
+            #print("Message volume: ", len(D))
+            dest, msg = random.choice(D)
+            dest.route_receive(msg)
+            LOG += [("%s -> %s" % ( str(msg), dest.i))]
+            LOG += [(["V%d:%d" % (j, rep.view_i) for j,rep in enumerate(replicas)])]
+
+            D.remove((dest, msg))
+            D += sum([route_to(oi,i) for i,oi in enumerate(global_outs)],[]) # route_to(global_out)
+
+        # print(seen_replies)
+
+        if not len(seen_replies) == 2:
+            for line in LOG:
+                print(line)
+
+            for req in [request1, request2]:
+                print("------" * 5)
+                for R in replicas:
+                    R._debug_status(req)
+
+        assert len(seen_replies) == 2
+        # print(message_numbers)
