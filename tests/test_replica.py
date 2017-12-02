@@ -281,11 +281,12 @@ def test_view_change():
     assert len(RT.out_i) == 1
 
     msg = list(RT.out_i)[0]
-    mxs = [mx for mx in msg[2] if mx[0] == RT._PREPREPARE]
+    (_, xv, xn, xs, xC, xP, _) = msg
+    mxs = [mx for mx in xP if mx[0] == RT._PREPREPARE]
     assert len(mxs) == 2
 
     for (_, vi, ni, mi, _) in mxs:
-        assert RT.prepared(mi, vi, ni, msg[2])
+        assert RT.prepared(mi, vi, ni, xP)
 
     RT2 = replicas[2]
     L0 = len(RT2.in_i)

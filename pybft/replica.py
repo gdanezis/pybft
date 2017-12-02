@@ -44,20 +44,38 @@ class replica(object):
         self.view_i = 0
         self.in_i = set()
 
-        # Initialize checkpoints
-        initial_checkpoint = (self.vali, None, 0)
-
-        self.checkpts_i = set([(0, initial_checkpoint)])
-        for i in range(self.R):
-            self.in_i.add( (self._CHECKPOINT, 0, initial_checkpoint, i) )
-
         self.out_i = set()
         self.last_rep_i = defaultdict(NoneT)
         self.last_rep_ti = defaultdict(int)
         self.seqno_i = 0
         self.last_exec_i = 0
 
-    # Utility functions
+        # Initialize checkpoints
+        initial_checkpoint = self.to_checkpoint(self.vali, self.last_rep_i, self.last_rep_ti)
+
+        self.checkpts_i = set([(0, initial_checkpoint)])
+        for i in range(self.R):
+            self.in_i.add( (self._CHECKPOINT, self.view_i, self.last_exec_i, initial_checkpoint, i) )
+
+
+        # Utility functions
+
+        # Consts
+        self.max_out = 100
+        self.chkpt_int = 50
+        assert self.chkpt_int < self.max_out
+
+    def to_checkpoint(self, vi, rep, rep_t):
+        rep_ser = tuple(sorted(rep.items()))
+        rep_t_ser = tuple(sorted(rep_t.items()))
+        return (vi, rep_ser, rep_t_ser)
+
+    def from_checkpoint(self, chkpt):
+        vali, rep_s, rep_t_s = chkpt
+        last_rep_i = defaultdict(NoneT).update(rep_s)
+        last_rep_ti = defaultdict(int).update(rep_t_s)
+
+        return (vali, last_rep_i, last_rep_ti)
 
     def valid_sig(self, i, m):
         return True
@@ -73,10 +91,18 @@ class replica(object):
         return self.view_i == v
 
     def in_w(self, n):
-        return True # TODO: fix me.
+        return 0 < n - self.stable_n() < self.max_out
 
     def in_wv(self, v, n):
         return self.in_v(v) and self.in_w(n)
+
+    def stable_n(self):
+        return min(n for n,_ in self.checkpts_i)
+
+    def stable_chkpt(self):
+        vx = min((n,v) for (n,v) in self.checkpts_i)[1]
+        assert len(vx) == 3
+        return vx
 
 
     def has_new_view(self, v):
@@ -87,6 +113,9 @@ class replica(object):
                 if msg[1] == v:
                     return True
             return False
+
+    def take_chkpt(self, n):
+        return (n % self.chkpt_int) == 0
 
 
     def hash(self, m):
@@ -131,8 +160,18 @@ class replica(object):
 
 
     def correct_view_change(self, msg, v, j):
-        (_, _, P, _) = msg
-        return P == self.compute_P(v, P)
+        (_, _, n, s, C, P, xj) = msg
+        # TODO: Check correctness (suspect missing cases)
+
+        ret = True
+        ret &= j == xj
+        ret &= C == self.compute_C(n, s, C)
+        ret &= len(C) > self.f
+        ret &= P == self.compute_P(v, P)
+        print(P)
+        ret &= all(np - n <= self.max_out for (_, _, np, _, _) in P )
+
+        return ret
 
 
     # Input transactions
@@ -215,10 +254,12 @@ class replica(object):
 
 
     def receive_view_change(self, msg):
-        (_, v, P, j) = msg
+        (_, v, n, s, C, P, j) = msg
         if j == self.i: return
 
-        if v >= self.view_i and self.correct_view_change(msg, v, j):
+        ret = self.correct_view_change(msg, v, j)
+        assert ret
+        if v >= self.view_i and ret:
             self.in_i.add(msg)
 
 
@@ -226,21 +267,29 @@ class replica(object):
         (_, v, X, O, N, j) = msg
         if j == self.i: return False
 
-        P = set()
-        new_mvn = []
-        for msgx in self.filter_type(self._PREPREPARE, O | N):
-            (_, vi, ni, mi, _) = msgx
-            P.add( (self._PREPARE, v, ni, self.hash(mi), self.i) )
-            new_mvn += [(mi, v, ni)]
-
-        cond = v >= self.view_i and v > 0
         
-        O2, N2, minO, maxO, used_ns = self.compute_new_view_sets(v, X)
+        cond = v >= self.view_i and v > 0
+
+        senders = set()
+        for x in X:
+            snd = x[-1]
+            cond &= self.correct_view_change(x, v, snd)
+            senders.add(snd)
+
+        cond &= len(senders) >= 2 * self.f + 1 
+        O2, N2, maxV, maxO, used_ns = self.compute_new_view_sets(v, X)
         cond &= N == N2
+        cond &= O == O2
         cond &= not self.has_new_view(v)
         
 
         if cond:
+
+            P = set()
+            for msgx in self.filter_type(self._PREPREPARE, O | N):
+                (_, vi, ni, mi, _) = msgx
+                P.add( (self._PREPARE, v, ni, self.hash(mi), self.i) )
+
             self.view_i = v
             self.in_i |= (O | N | P)
             self.in_i.add(msg)
@@ -255,7 +304,7 @@ class replica(object):
     def send_preprepare(self, m, v, n):
         cond = (self.primary() == self.i)
         cond &= (n == self.seqno_i + 1)
-        cond &= self.in_v(v)
+        cond &= self.in_wv(v, n)
         cond &= self.has_new_view(v)
         cond &= m in self.in_i
 
@@ -298,6 +347,13 @@ class replica(object):
                     rep = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
                     self.out_i.add(rep)
             self.in_i.discard(m)
+            if self.take_chkpt(n):
+                new_chkpt = self.to_checkpoint(self.vali, self.last_rep_i, self.last_rep_ti)
+                m = (self._CHECKPOINT, self.view_i, n, new_chkpt, self.i)
+                self.in_i.add(m)
+                self.out_i.add(m)
+                self.checkpts_i.add((n, new_chkpt))
+
             return True
         else:
             return False
@@ -325,10 +381,26 @@ class replica(object):
 
             for mx in self.in_i: 
                 if mx[:4] == (self._PREPARE, vi2, ni2, self.hash(mi2)):
+                    print(mx[0])
                     if mx[4] != self.primary(vi2):
                         P.add(mx)
 
         return frozenset(P)
+
+    def compute_C(self, n=None, s=None, M=None):
+        if M is None:
+            M = self.in_i
+
+        if n is None or s is None:
+            n, s = self.stable_n(), self.stable_chkpt(),
+
+        C = set()
+        for m in self.filter_type(self._CHECKPOINT, M):
+            (_, v, np, dp, j) = m
+            if np == n and s == dp:
+                C.add(m)
+        return frozenset(C)
+
 
 
     def send_viewchange(self, v):
@@ -336,8 +408,10 @@ class replica(object):
             self.view_i = v
 
             P = self.compute_P(v)
+            C = self.compute_C()
 
-            msg = (self._VIEWCHANGE, v, P, self.i)
+            sn, shkpt = self.stable_n(), self.stable_chkpt(),
+            msg = (self._VIEWCHANGE, v, sn, shkpt, C, P, self.i)
             self.out_i.add(msg)
             self.in_i.add(msg)
             return True
@@ -347,33 +421,36 @@ class replica(object):
 
     def compute_new_view_sets(self, v, V):
         mergeP = set()
-        for (_, _, P, _) in V:
+        maxV = 0
+        for (_, _, n, s, C, P, _) in V:
             mergeP |= P
+            maxV = max(maxV, n)
 
         # The set O contains fresh preprepares
         O = set()
         used_ns = set()
         for msg in self.filter_type(self._PREPREPARE, mergeP):
             (_, vi,ni, mi, _) = msg
-            new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
-            O.add(new_prep)
-            used_ns.add(ni)
+            if ni > maxV:
+                new_prep = (self._PREPREPARE, v, ni, mi, self.primary(v))
+                O.add(new_prep)
+                used_ns.add(ni)
         O = frozenset(O)
 
         # The set N contrains nulls for the non-proposed slots
         N = set()
 
-        minO, maxO = 0, 0
+        maxO = 0
         if len(used_ns) > 0:
-            minO, maxO = min(used_ns), max(used_ns) + 1
+            maxO =max(used_ns)
 
-        for ni in range(minO, maxO):
+        for ni in range(maxV+1, maxO+1):
             if ni not in used_ns:
                 new_prep = (self._PREPREPARE, v, ni, None, self.primary(v))
                 N.add(new_prep)
         N = frozenset(N)
 
-        return O, N, minO, maxO, used_ns
+        return O, N, maxV, maxO, used_ns
 
 
     def send_newview(self, v, V):
@@ -385,25 +462,60 @@ class replica(object):
         cond &= not self.has_new_view(v)
         
         who = set()
+        same = None
         for Vi in V:
-            cond &= Vi[:2] == (self._VIEWCHANGE, v)
-            who.add(Vi[3])
+            (xtype, xv, xn, xs, xC, xP, peer_k) = Vi
+            cond &= (xtype, xv) == (self._VIEWCHANGE, v)
+            cond &= same == None or (xn, xs, xC, xP) == same
+            same = (xn, xs, xC, xP)
+            who.add(peer_k)
         
         cond &= (len(who) == (2 * self.f + 1))
 
         if cond:
-            (O, N, minO, maxO, used_ns) = self.compute_new_view_sets(v, V)
+            (O, N, maxV, maxO, used_ns) = self.compute_new_view_sets(v, V)
 
             m = (self._NEWVIEW, v, frozenset(V), O, N, self.i)
-            self.seqno_i = max(used_ns) if len(used_ns) > 0 else self.seqno_i
+            self.seqno_i = maxO if maxO > 0 else self.seqno_i
             self.in_i.add(m)
             self.in_i |= O
             self.in_i |= N
             self.out_i.add(m) # TODO clear out_i
 
+            self.update_state_nv(v, V, m, maxV)
+
+            # TODO: Clear all old requests
+            #for req in list(self.filter_type(self._REQUEST)):
+            #    (_, o, t, c) = req
+            #    if t <= self.last_rep_ti[c]:
+            #        self.in_i.remove(req)
+
             return True
         else:
             return False
+
+    def update_state_nv(self, v, V, m, maxV):
+        if maxV > self.stable_n():
+            (_, _, xn, xs, C, _, _) = V[0]
+            if xn == maxV:
+                self.in_i |= C
+
+            own_chkpt = (self._CHECKPOINT, v, xn, xs, i)
+            if own_chkpt not in self.in_i:
+                self.in_i.add(own_chkpt)
+                self.out_i.add(own_chkpt)
+
+            for chk in list(self.checkpts_i):
+                ni, si = chk
+                if ni < maxV:
+                    self.checkpts_i.remove(chk)
+
+            if maxV > self.last_exec_i:
+                self.checkpts_i.add( (maxV, s) )
+
+            vx = self.stable_chkpt
+            self.vali, self.last_rep_i, self.last_rep_ti = from_checkpoint(vx)
+            self.last_exec_i = maxV
 
 
     # System's calls
@@ -424,7 +536,7 @@ class replica(object):
         elif xtype == self._COMMIT and xlen == 5:
             self.receive_commit(msg)
 
-        elif xtype == self._VIEWCHANGE and xlen == 4:
+        elif xtype == self._VIEWCHANGE and xlen == 4 + 3:
             self.receive_view_change(msg)
 
             # Gather related view changes
