@@ -483,11 +483,10 @@ class replica(object):
 
             self.update_state_nv(v, V, m, maxV)
 
-            # TODO: Clear all old requests
-            #for req in list(self.filter_type(self._REQUEST)):
-            #    (_, o, t, c) = req
-            #    if t <= self.last_rep_ti[c]:
-            #        self.in_i.remove(req)
+            for req in list(self.filter_type(self._REQUEST)):
+                (_, o, t, c) = req
+                if c in self.last_rep_ti and t <= self.last_rep_ti[c]:
+                    self.in_i.remove(req)
 
             return True
         else:
