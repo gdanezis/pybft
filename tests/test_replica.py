@@ -428,6 +428,7 @@ class driver():
             self.D.remove((dest, msg))
             self.route_to()
 
+
 def test_driver_for_f3():
     dvr = driver(3)    
 
@@ -442,6 +443,22 @@ def test_driver_for_f3():
 
     assert len(dvr.seen_replies) == 2
     # print(dvr.message_numbers)
+
+def test_fault_catchup():
+    dvr = driver(3)    
+
+    request1 = (replica._REQUEST, b"message1", 0, b"100")
+    request2 = (replica._REQUEST, b"message2", 0.5, b"101")
+
+    rand = random.choice(dvr.replicas)
+    rand.route_receive(request1)
+    rand.route_receive(request2)
+
+    dvr.execute()
+
+    assert len(dvr.seen_replies) == 2
+    # print(dvr.message_numbers)
+
 
 
 def test_view_change_cost():

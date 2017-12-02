@@ -51,13 +51,16 @@ class replica(object):
     def valid_sig(self, i, m):
         return True
 
+
     def primary(self, v=None):
         if v is None:
             v = self.view_i
         return v % self.R
 
+
     def in_v(self, v):
         return self.view_i == v
+
 
     def has_new_view(self, v):
         if v == 0:
@@ -68,10 +71,12 @@ class replica(object):
                     return True
             return False
 
+
     def hash(self, m):
         t = ("%2.2f" % m[2]).encode("utf-8")
         bts = m[1] + b"||" + t + b"||" + m[3] # TODO: fix formatting
         return sha256(bts).hexdigest()
+
 
     def prepared(self, m, v, n, M=None):
         if M is None:
@@ -87,6 +92,7 @@ class replica(object):
 
         cond &= len(others) >= 2*self.f
         return cond
+
 
     def commited(self, m, v, n, M=None):
         if M is None:
@@ -105,6 +111,7 @@ class replica(object):
 
         cond &= len(others) >= 2*self.f + 1
         return cond
+
 
     def correct_view_change(self, msg, v, j):
         (_, _, P, _) = msg
@@ -165,12 +172,14 @@ class replica(object):
             if m != None:
                 self.in_i.add(m)
 
+
     def receive_prepare(self, msg):
         (_, v, n, d, j) = msg
         if j == self.i: return
 
         if j != self.primary(v) and self.in_v(v):
             self.in_i.add(msg)
+
 
     def receive_commit(self, msg):
         (_, v, n, d, j) = msg
@@ -179,12 +188,14 @@ class replica(object):
         if self.view_i >= v:
             self.in_i.add(msg)
 
+
     def receive_view_change(self, msg):
         (_, v, P, j) = msg
         if j == self.i: return
 
         if v >= self.view_i and self.correct_view_change(msg, v, j):
             self.in_i.add(msg)
+
 
     def receive_new_view(self, msg):
         (_, v, X, O, N, j) = msg
@@ -239,6 +250,7 @@ class replica(object):
         else:
             return False
 
+
     def send_commit(self, m, v, n):
         c = (self._COMMIT, v, n, self.hash(m), self.i)
         if self.prepared(m,v,n) and c not in self.in_i:
@@ -247,6 +259,7 @@ class replica(object):
             return True
         else:
             return False
+
 
     def execute(self, m, v, n):
         if n == self.last_exec_i + 1 and self.commited(m, v, n):
@@ -263,6 +276,7 @@ class replica(object):
             return True
         else:
             return False
+
 
     def compute_P(self, v, M=None):
         if M is None:
@@ -304,6 +318,7 @@ class replica(object):
             return True
         else:
             return False
+
 
     def compute_new_view_sets(self, v, V):
         mergeP = set()
@@ -412,8 +427,7 @@ class replica(object):
                     self.route_receive(xmsg)
 
         else:
-            print("UNKNOWN type: ", msg)
-            return
+            raise Exception("UNKNOWN type: ", msg)
 
         # Make as much progress as possible
         all_preps = []
@@ -427,6 +441,7 @@ class replica(object):
         for (_, vx, nx, mx, _) in all_preps:
             self.send_commit(mx,vx,nx)
             self.execute(mx,vx,nx)
+
             
     def _debug_status(self, request):
         # First check out if the request has been received:
