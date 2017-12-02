@@ -446,6 +446,22 @@ def test_driver_for_f3():
     # print(dvr.message_numbers)
 
 
+def test_driver_for_f3_many():
+    dvr = driver(f=11)    
+
+    for x in range(1000):
+        request1 = (replica._REQUEST, b"message%d", 0, b"%d")
+        rand = random.choice(dvr.replicas)
+        rand.route_receive(request1)
+    
+
+    dvr.execute()
+
+    assert len(dvr.seen_replies) == 1000
+    # print(dvr.message_numbers)
+
+
+
 def test_view_change_cost():
     for _ in range(10):
         replicas = [ replica(i, 4) for i in range(4) ]
