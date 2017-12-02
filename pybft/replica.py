@@ -61,13 +61,14 @@ class replica(object):
         # Utility functions
 
         # Consts
-        self.max_out = 100
-        self.chkpt_int = 50
+        self.max_out = 20
+        self.chkpt_int = 5
         assert self.chkpt_int < self.max_out
 
     def to_checkpoint(self, vi, rep, rep_t):
         rep_ser = tuple(sorted(rep.items()))
         rep_t_ser = tuple(sorted(rep_t.items()))
+
         return (vi, rep_ser, rep_t_ser)
 
     def from_checkpoint(self, chkpt):
@@ -101,7 +102,6 @@ class replica(object):
 
     def stable_chkpt(self):
         vx = min((n,v) for (n,v) in self.checkpts_i)[1]
-        assert len(vx) == 3
         return vx
 
 
@@ -168,7 +168,7 @@ class replica(object):
         ret &= C == self.compute_C(n, s, C)
         ret &= len(C) > self.f
         ret &= P == self.compute_P(v, P)
-        print(P)
+    
         ret &= all(np - n <= self.max_out for (_, _, np, _, _) in P )
 
         return ret
@@ -180,7 +180,7 @@ class replica(object):
         (_, o, t, c) = msg
 
         # We have already replied to the message
-        if t == self.last_rep_i[c]:
+        if c in self.last_rep_i and t == self.last_rep_i[c]:
             new_reply = (self._REPLY, self.view_i, t, c, self.i, last_rep_i[c])
             self.out_i.add( new_reply )
         else:
@@ -381,7 +381,6 @@ class replica(object):
 
             for mx in self.in_i: 
                 if mx[:4] == (self._PREPARE, vi2, ni2, self.hash(mi2)):
-                    print(mx[0])
                     if mx[4] != self.primary(vi2):
                         P.add(mx)
 
@@ -518,6 +517,44 @@ class replica(object):
             self.last_exec_i = maxV
 
 
+    def garbage_collect(self):
+        counter = defaultdict(set)
+        X = 0
+        for msg in self.filter_type(self._CHECKPOINT):
+            (_, cv, cn, cs, ci) = msg
+            counter[(cn, cs)].add(ci)
+            X+=1
+
+        n = 0
+        for (cn, cs) in counter:
+            if len(counter[(cn, cs)]) > self.f:
+                n = max(n, cn)
+
+        # Massive clean-up
+        to_delete = set()
+        for msg in self.in_i:
+            xtype = msg[0]
+            if xtype in [self._PREPREPARE, self._PREPARE, \
+                         self._COMMIT, self._CHECKPOINT]:
+                xn = msg[2]
+                if xn < n:
+                    to_delete.add(msg)
+
+        self.in_i -= to_delete
+
+        # Now delete the checkpoints
+        to_delete_chk = set()
+        for (xn, s) in self.checkpts_i:
+            if xn < n:
+                to_delete_chk.add( (xn, s) )
+        self.checkpts_i -= to_delete_chk
+
+        if n > 0 and len(to_delete):
+            print("DELETED (%s): %s,%s (in_i=%s stable n=%s)" % (n, len(to_delete), len(to_delete_chk), len(self.in_i), self.stable_n()))
+
+
+
+
     # System's calls
 
     def route_receive(self, msg):
@@ -535,6 +572,9 @@ class replica(object):
             
         elif xtype == self._COMMIT and xlen == 5:
             self.receive_commit(msg)
+
+        elif xtype == self._CHECKPOINT and xlen == 5:
+            self.receive_checkpoint(msg)
 
         elif xtype == self._VIEWCHANGE and xlen == 4 + 3:
             self.receive_view_change(msg)
@@ -578,6 +618,9 @@ class replica(object):
         for (_, vx, nx, mx, _) in all_preps:
             self.send_commit(mx,vx,nx)
             self.execute(mx,vx,nx)
+
+        # Garbage collect
+        self.garbage_collect()
 
             
     def _debug_status(self, request):

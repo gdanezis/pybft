@@ -417,11 +417,17 @@ class driver():
             self.D += Ds
             msgs.clear()
 
-    def execute(self):
+    def execute(self, ordered=True):
         self.route_to()
         while len(self.D) > 0:
             #print("Message volume: ", len(D))
-            dest, msg = random.choice(self.D)
+            # dest, msg = random.choice(self.D)
+            
+            if ordered:
+                dest, msg = self.D[0]
+            else:
+                dest, msg = random.choice(self.D)    
+
             dest.route_receive(msg)
             self.LOG += [("%s -> %s" % ( str(msg), dest.i))]
             self.LOG += [(["V%d:%d" % (j, rep.view_i) for j,rep in enumerate(self.replicas)])]
@@ -447,17 +453,18 @@ def test_driver_for_f3():
 
 
 def test_driver_for_f3_many():
-    dvr = driver(f=11)    
+    dvr = driver(f=1)    
 
-    for x in range(1000):
-        request1 = (replica._REQUEST, b"message%d", 0, b"%d")
+    Msgs_N = 50
+    for x in range(Msgs_N):
+        request1 = (replica._REQUEST, b"message%d" % x, 0, b"%d" % x)
         rand = random.choice(dvr.replicas)
         rand.route_receive(request1)
     
 
     dvr.execute()
 
-    assert len(dvr.seen_replies) == 1000
+    assert len(dvr.seen_replies) == Msgs_N
     # print(dvr.message_numbers)
 
 
