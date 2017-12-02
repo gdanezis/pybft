@@ -24,6 +24,9 @@ class replica(object):
     _VIEWCHANGE = "_VIEWCHANGE" # 1005
     _NEWVIEW    = "_NEWVIEW"
 
+    # Checkpoint messages
+    _CHECKPOINT = "_CHECKPOINT"
+
     def filter_type(self, xtype, M=None):
         if M is None:
             M = self.in_i
@@ -40,6 +43,14 @@ class replica(object):
         self.vali = None # v_0
         self.view_i = 0
         self.in_i = set()
+
+        # Initialize checkpoints
+        initial_checkpoint = (self.vali, None, 0)
+
+        self.checkpts_i = set([(0, initial_checkpoint)])
+        for i in range(self.R):
+            self.in_i.add( (self._CHECKPOINT, 0, initial_checkpoint, i) )
+
         self.out_i = set()
         self.last_rep_i = defaultdict(NoneT)
         self.last_rep_ti = defaultdict(int)
@@ -60,6 +71,12 @@ class replica(object):
 
     def in_v(self, v):
         return self.view_i == v
+
+    def in_w(self, n):
+        return True # TODO: fix me.
+
+    def in_wv(self, v, n):
+        return self.in_v(v) and self.in_w(n)
 
 
     def has_new_view(self, v):
@@ -153,7 +170,7 @@ class replica(object):
         if j == self.i: return
 
         cond = (self.primary() == j)
-        cond &= self.in_v(v)
+        cond &= self.in_wv(v, n)
         cond &= self.has_new_view(v)
 
         for mx in self.filter_type(self._PREPARE):
@@ -177,7 +194,7 @@ class replica(object):
         (_, v, n, d, j) = msg
         if j == self.i: return
 
-        if j != self.primary(v) and self.in_v(v):
+        if j != self.primary(v) and self.in_wv(v, n):
             self.in_i.add(msg)
 
 
@@ -185,7 +202,15 @@ class replica(object):
         (_, v, n, d, j) = msg
         if j == self.i: return
 
-        if self.view_i >= v:
+        if self.view_i >= v and self.in_w(n):
+            self.in_i.add(msg)
+
+
+    def receive_checkpoint(self, msg):
+        (_, v, n, d, j) = msg
+        if j == self.i: return
+
+        if self.view_i >= v and self.in_w(n):
             self.in_i.add(msg)
 
 
