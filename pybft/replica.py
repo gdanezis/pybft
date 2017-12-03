@@ -4,6 +4,8 @@
 
 from collections import defaultdict
 from hashlib import sha256
+from collections import Counter
+
 
 NoneT = lambda: None
 
@@ -21,7 +23,7 @@ class replica(object):
     _REPLY      = "_REPLY" # 1002
     _REQUEST    = "_REQUEST" # 1003
     _COMMIT     = "_COMMIT" # 1004
-    _VIEWCHANGE = "_VIEWCHANGE" # 1005
+    _VIEWCHANGE     = "_VIEWCHANGE" # 1005
     _NEWVIEW    = "_NEWVIEW"
 
     # Checkpoint messages
@@ -57,13 +59,16 @@ class replica(object):
         for i in range(self.R):
             self.in_i.add( (self._CHECKPOINT, self.view_i, self.last_exec_i, initial_checkpoint, i) )
 
-
         # Utility functions
 
         # Consts
-        self.max_out = 20
-        self.chkpt_int = 5
+        self.max_out = 30
+        self.chkpt_int = 10
         assert self.chkpt_int < self.max_out
+
+        # Testing 
+        self.stable_n()
+        self.stat = Counter()
 
     def to_checkpoint(self, vi, rep, rep_t):
         rep_ser = tuple(sorted(rep.items()))
@@ -98,7 +103,8 @@ class replica(object):
         return self.in_v(v) and self.in_w(n)
 
     def stable_n(self):
-        return min(n for n,_ in self.checkpts_i)
+        min_n = min(n for n,_ in self.checkpts_i)
+        return min_n
 
     def stable_chkpt(self):
         vx = min((n,v) for (n,v) in self.checkpts_i)[1]
@@ -180,8 +186,8 @@ class replica(object):
         (_, o, t, c) = msg
 
         # We have already replied to the message
-        if c in self.last_rep_i and t == self.last_rep_i[c]:
-            new_reply = (self._REPLY, self.view_i, t, c, self.i, last_rep_i[c])
+        if c in self.last_rep_ti and t == self.last_rep_ti[c]:
+            new_reply = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
             self.out_i.add( new_reply )
         else:
             self.in_i.add( msg )
@@ -200,7 +206,6 @@ class replica(object):
                        xmsg[1] == self.view_i and \
                        xmsg[3] == msg:
 
-                       # print("!!! FOUND PREPREPARE")
                        self.out_i.add(xmsg)
 
 
@@ -258,7 +263,6 @@ class replica(object):
         if j == self.i: return
 
         ret = self.correct_view_change(msg, v, j)
-        assert ret
         if v >= self.view_i and ret:
             self.in_i.add(msg)
 
@@ -344,9 +348,12 @@ class replica(object):
                     if t > self.last_rep_ti[c]:
                         self.last_rep_ti[c] = t
                         self.last_rep_i[c], self.vali = None, None # TODO: EXEC
+                        #if self.i == 1:
+                        #    print("********** %s:%s" % (self.last_exec_i, (t, c)) )
                     rep = (self._REPLY, self.view_i, t, c, self.i, self.last_rep_i[c])
                     self.out_i.add(rep)
             self.in_i.discard(m)
+
             if self.take_chkpt(n):
                 new_chkpt = self.to_checkpoint(self.vali, self.last_rep_i, self.last_rep_ti)
                 m = (self._CHECKPOINT, self.view_i, n, new_chkpt, self.i)
@@ -469,7 +476,7 @@ class replica(object):
             same = (xn, xs, xC, xP)
             who.add(peer_k)
         
-        cond &= (len(who) == (2 * self.f + 1))
+        cond &= (len(who) >= (2 * self.f + 1))
 
         if cond:
             (O, N, maxV, maxO, used_ns) = self.compute_new_view_sets(v, V)
@@ -524,10 +531,14 @@ class replica(object):
             counter[(cn, cs)].add(ci)
             X+=1
 
-        n = 0
+        n, s = (-1, 0)
         for (cn, cs) in counter:
-            if len(counter[(cn, cs)]) > self.f:
-                n = max(n, cn)
+            # NOTE: Additional check not in spec: (cn, cs) in self.checkpts_i
+            if len(counter[(cn, cs)]) > self.f and (cn, cs) in self.checkpts_i:
+                n, s = max((n,s), (cn, cs))
+
+        ## TODO: Check this is correct -- not in the spec
+        # self.checkpts_i.add( (n, s) )
 
         # Massive clean-up
         to_delete = set()
@@ -548,20 +559,39 @@ class replica(object):
                 to_delete_chk.add( (xn, s) )
         self.checkpts_i -= to_delete_chk
 
-        if n > 0 and len(to_delete):
-            print("DELETED (%s): %s,%s (in_i=%s stable n=%s)" % (n, len(to_delete), len(to_delete_chk), len(self.in_i), self.stable_n()))
+        # Now grabage collect requests
+        to_delete_req = set()
+        for msg in self.filter_type(self._REQUEST):
+            (_, o, t, c) = msg
+            if c in self.last_rep_ti and self.last_rep_ti[c] == t:
+                to_delete_req.add(msg)
+    
+        self.in_i -= to_delete_req        
 
+        # if n > 0 and len(to_delete):
+        #    print("DELETED (%s): %s,%s (in_i=%s stable n=%s)" % (n, len(to_delete), len(to_delete_chk), len(self.in_i), self.stable_n()))
+        #    print(Counter([m[0] for m in self.in_i]))
 
 
 
     # System's calls
 
     def route_receive(self, msg):
+
         xtype = msg[0]
+        self.stat.update([xtype])
         xlen = len(msg)
         if xtype == self._REQUEST and xlen == 4:
             self.receive_request(msg)
             ret = self.send_preprepare(msg, self.view_i, self.seqno_i+1)
+
+            # TODO CHECK CORRECTNESS -- NOT IN SPEC:
+            # Check if we are done with this. Then respond again to all:
+            (_, o, t, c) = msg
+            if c in self.last_rep_ti and self.last_rep_ti[c] == t:
+                self.out_i |= set(self.filter_type(self._COMMIT))
+                self.out_i |= set(self.filter_type(self._CHECKPOINT))
+
             
         elif xtype == self._PREPREPARE and xlen == 5:
             self.receive_preprepare(msg)
@@ -621,6 +651,10 @@ class replica(object):
         # Garbage collect
         self.garbage_collect()
 
+
+    def unhandled_requests(self):
+        unhand = list(self.filter_type(self._REQUEST))
+        return unhand
             
     def _debug_status(self, request):
         # First check out if the request has been received:

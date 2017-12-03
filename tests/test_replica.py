@@ -11,14 +11,14 @@ def test_replica_init():
 def test_replica_request():
     r = replica(0, 4)
 
-    request = (r._REQUEST, b"message", 0, b"100")
+    request = (r._REQUEST, b"message", 10, b"100")
     r.receive_request(request)
 
 def test_replica_preprepare():
     r = replica(0, 4)
 
-    request = (r._REQUEST, b"message", 0, b"100")
-    request2 = (r._REQUEST, b"message2", 0, b"101")
+    request = (r._REQUEST, b"message", 10, b"100")
+    request2 = (r._REQUEST, b"message2", 10, b"101")
 
     r.receive_request(request)
     L0 = len(r.out_i)
@@ -60,8 +60,8 @@ def test_replica_preprepare():
 def test_replica_prepare():
     r1 = replica(1, 4)
 
-    request = (r1._REQUEST, b"message", 0, b"100")
-    request2 = (r1._REQUEST, b"message2", 0, b"101")
+    request = (r1._REQUEST, b"message", 10, b"100")
+    request2 = (r1._REQUEST, b"message2", 10, b"101")
 
     prepr = (r1._PREPREPARE, 0, 1, request, 0)
     prepr2 = (r1._PREPREPARE, 0, 1, request2, 0)
@@ -87,7 +87,7 @@ def test_replica_prepare():
 def test_proposed():
     r = replica(0, 4)
 
-    request = (r._REQUEST, b"message", 0, b"100")
+    request = (r._REQUEST, b"message", 10, b"100")
     prepr = (r._PREPREPARE, 0, 1, request, 0)
     p1 = (r._PREPARE, 0, 1, r.hash(request), 1)    
 
@@ -112,7 +112,7 @@ def test_proposed():
 def test_committed():
     r = replica(0, 4)
 
-    request = (r._REQUEST, b"message", 0, b"100")
+    request = (r._REQUEST, b"message", 10, b"100")
     prepr = (r._PREPREPARE, 0, 1, request, 0)
     p0 = (r._COMMIT, 0, 1, r.hash(request), 0)    
     p1 = (r._COMMIT, 0, 1, r.hash(request), 1)    
@@ -142,7 +142,7 @@ def test_all_transitions():
         for r in replicas:
             r.out_i = global_out
 
-        request = (r._REQUEST, b"message", 0, b"100")
+        request = (r._REQUEST, b"message", 10, b"100")
 
         import random
         r = random.choice(replicas)
@@ -189,8 +189,8 @@ def test_all_transitions_for_two():
         for r in replicas:
             r.out_i = global_out
 
-        request1 = (r._REQUEST, b"message1", 0, b"100")
-        request2 = (r._REQUEST, b"message2", 0.5, b"101")
+        request1 = (r._REQUEST, b"message1", 10, b"100")
+        request2 = (r._REQUEST, b"message2", 5, b"101")
 
         import random
         rand = random.choice(replicas)
@@ -238,8 +238,8 @@ def test_view_change():
     for r in replicas:
         r.out_i = global_out
 
-    request1 = (r._REQUEST, b"message1", 0, b"100")
-    request2 = (r._REQUEST, b"message2", 0.5, b"101")
+    request1 = (r._REQUEST, b"message1", 10, b"100")
+    request2 = (r._REQUEST, b"message2", 5, b"101")
 
     import random
     rand = random.choice(replicas)
@@ -332,8 +332,8 @@ def test_view_change_full():
         for r, oi in zip(replicas,global_outs):
             r.out_i = oi
 
-        request1 = (r._REQUEST, b"message1", 0, b"100")
-        request2 = (r._REQUEST, b"message2", 0.5, b"101")
+        request1 = (r._REQUEST, b"message1", 10, b"100")
+        request2 = (r._REQUEST, b"message2", 5, b"101")
 
         import random
         rand = random.choice(replicas)
@@ -417,36 +417,62 @@ class driver():
             self.D += Ds
             msgs.clear()
 
-    def execute(self, ordered=True):
+    def execute(self, msg_queue, ordered=True, in_flight=10):
         self.route_to()
-        while len(self.D) > 0:
+        in_f = 0
+
+        while True:
             #print("Message volume: ", len(D))
             # dest, msg = random.choice(self.D)
             
-            if ordered:
-                dest, msg = self.D[0]
-            else:
-                dest, msg = random.choice(self.D)    
+            while len(msg_queue) > 0 and in_f - len(self.seen_replies) < in_flight:
+                in_f += 1
+                m = msg_queue.pop(0)
+                r = random.choice(self.replicas)
+                r.route_receive(m)
+                self.route_to()
 
-            dest.route_receive(msg)
-            self.LOG += [("%s -> %s" % ( str(msg), dest.i))]
-            self.LOG += [(["V%d:%d" % (j, rep.view_i) for j,rep in enumerate(self.replicas)])]
+            if len(self.D) > 0:
+                if ordered:
+                    dest, msg = self.D[0]
+                else:
+                    dest, msg = random.choice(self.D)    
 
-            self.D.remove((dest, msg))
+                dest.route_receive(msg)
+                self.LOG += [("%s -> %s" % ( str(msg), dest.i))]
+                self.LOG += [(["V%d:%d" % (j, rep.view_i) for j,rep in enumerate(self.replicas)])]
+
+                self.D.remove((dest, msg))
+            
+            if len(self.D) == 0:
+                for r in self.replicas:
+                    for m in r.unhandled_requests():
+                        r.route_receive(m)
+
             self.route_to()
 
+            # Do a few internal integrity checks
+            max_stable_n = max(r.stable_n() for r in self.replicas)
+            max_n = max(r.last_exec_i for r in self.replicas)
+            assert max_stable_n <= max_n
+
+            if not (len(self.D) > 0 or len(msg_queue) > 0):
+                break
+        assert len(msg_queue) == 0
+
+        for r in self.replicas:
+            req = r.unhandled_requests()
+            assert len(req) == 0
+            
 
 def test_driver_for_f3():
     dvr = driver(3)    
 
-    request1 = (replica._REQUEST, b"message1", 0, b"100")
-    request2 = (replica._REQUEST, b"message2", 0.5, b"101")
+    request1 = (replica._REQUEST, b"message1", 10, b"100")
+    request2 = (replica._REQUEST, b"message2", 5, b"101")
 
-    rand = random.choice(dvr.replicas)
-    rand.route_receive(request1)
-    rand.route_receive(request2)
 
-    dvr.execute()
+    dvr.execute([request1, request2], ordered = False)
 
     assert len(dvr.seen_replies) == 2
     # print(dvr.message_numbers)
@@ -455,14 +481,16 @@ def test_driver_for_f3():
 def test_driver_for_f3_many():
     dvr = driver(f=1)    
 
+    reqs = []
     Msgs_N = 50
     for x in range(Msgs_N):
-        request1 = (replica._REQUEST, b"message%d" % x, 0, b"%d" % x)
-        rand = random.choice(dvr.replicas)
-        rand.route_receive(request1)
+        request1 = (replica._REQUEST, b"message%d" % x, 10, b"%d" % x)
+        reqs += [ request1 ]
+        #rand = random.choice(dvr.replicas)
+        #rand.route_receive(request1)
     
 
-    dvr.execute()
+    dvr.execute(reqs, ordered=False)
 
     assert len(dvr.seen_replies) == Msgs_N
     # print(dvr.message_numbers)
@@ -478,8 +506,8 @@ def test_view_change_cost():
         # one and take control of the scheduling of messages
         global_outs = [r.out_i for r in replicas]
 
-        request1 = (replica._REQUEST, b"message1", 0, b"100")
-        request2 = (replica._REQUEST, b"message2", 0.5, b"101")
+        request1 = (replica._REQUEST, b"message1", 10, b"100")
+        request2 = (replica._REQUEST, b"message2", 5, b"101")
 
         import random
         rand = random.choice(replicas)
