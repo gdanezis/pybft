@@ -144,8 +144,9 @@ class replica(object):
         cond = (self._PREPREPARE, v, n, m, self.primary(v)) in M
         
         others = set()
+        hm = self.hash(m)
         for mx in M: 
-            if mx[:4] == (self._PREPARE, v, n, self.hash(m)):
+            if mx[:4] == (self._PREPARE, v, n, hm):
                 if mx[4] != self.primary(v):
                     others.add(mx[4])
 
@@ -164,8 +165,9 @@ class replica(object):
         cond |= m in M
         
         others = set()
+        hm = self.hash(m)
         for mx in M: 
-            if mx[:4] == (self._COMMIT, v, n, self.hash(m)):
+            if mx[:4] == (self._COMMIT, v, n, hm):
                 others.add(mx[4])
 
         cond &= len(others) >= 2*self.f + 1
@@ -224,10 +226,11 @@ class replica(object):
         cond &= self.in_wv(v, n)
         cond &= self.has_new_view(v)
 
+        hm = self.hash(m)
         for mx in self.filter_type(self._PREPARE):
             (_, vp, np, dp, ip) = mx
             if (vp, np, ip) == (v, n, self.i):
-                cond &= (dp == self.hash(m))
+                cond &= (dp == hm)
 
         if cond:
             # Send a prepare message
@@ -338,7 +341,7 @@ class replica(object):
 
     def send_commit(self, m, v, n):
         c = (self._COMMIT, v, n, self.hash(m), self.i)
-        if self.prepared(m,v,n) and c not in self.in_i:
+        if c not in self.in_i and self.prepared(m,v,n):
             self.out_i.add(c)
             self.in_i.add(c)
             return True
@@ -617,16 +620,13 @@ class replica(object):
 
             # Gather related view changes
             V = set()
-            for vc_msg in self.in_i:
-                if vc_msg[0] == self._VIEWCHANGE and vc_msg[1] == msg[1]:
+            for vc_msg in self.filter_type(self._VIEWCHANGE):
+                if vc_msg[1] == msg[1]:
                     V.add(vc_msg) 
             ret = self.send_newview(msg[1], V)
             if ret:
                 # Process hanging requests
-
-                for xmsg in list(self.in_i):
-                    if xmsg[0] != self._REQUEST: continue
-                    # print("!!! RESEND REQ: %s" % str(xmsg))
+                for xmsg in list(self.filter_type(self._REQUEST)):
                     self.route_receive(xmsg)
 
 
@@ -644,16 +644,15 @@ class replica(object):
 
         # Make as much progress as possible
         all_preps = []
-        for prep in list(self.in_i):
-            if prep[0] != self._PREPREPARE: continue
+        for prep in self.filter_type(self._PREPREPARE):
             if not (prep[1] >= self.view_i and prep[2] >= self.last_exec_i + 1): continue
             all_preps += [ prep ]
 
         all_preps = sorted(all_preps, key=lambda xmsg: xmsg[2])
 
         for (_, vx, nx, mx, _) in all_preps:
-            self.send_commit(mx,vx,nx)
-            self.execute(mx,vx,nx)
+                self.send_commit(mx,vx,nx)
+                self.execute(mx,vx,nx)
 
         # Garbage collect
         self.garbage_collect()
