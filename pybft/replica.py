@@ -10,7 +10,6 @@ from collections import Counter
 NoneT = lambda: None
 
 
-
 def _C(cond, msg):
     if not cond:
         print(msg)
@@ -145,7 +144,7 @@ class replica(object):
         
         others = set()
         hm = self.hash(m)
-        for mx in M: 
+        for mx in self.filter_type(self._PREPARE, M): 
             if mx[:4] == (self._PREPARE, v, n, hm):
                 if mx[4] != self.primary(v):
                     others.add(mx[4])
@@ -210,9 +209,8 @@ class replica(object):
                 # preprepare message for this request, send it
                 # again here.
 
-                for xmsg in self.in_i:
-                    if xmsg[0] == self._PREPREPARE and \
-                       xmsg[1] == self.view_i and \
+                for xmsg in self.filter_type(self._PREPREPARE, self.in_i):
+                    if xmsg[1] == self.view_i and \
                        xmsg[3] == msg:
 
                        self.out_i.add(xmsg)
@@ -396,7 +394,7 @@ class replica(object):
             P.add(prep)
             (_, vi2,ni2, mi2, _) = prep
 
-            for mx in self.in_i: 
+            for mx in self.filter_type(self._PREPARE, self.in_i): 
                 if mx[:4] == (self._PREPARE, vi2, ni2, self.hash(mi2)):
                     if mx[4] != self.primary(vi2):
                         P.add(mx)
