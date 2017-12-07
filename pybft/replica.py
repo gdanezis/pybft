@@ -124,10 +124,17 @@ class replica(object):
         return (n % self.chkpt_int) == 0
 
 
-    def hash(self, m):
+    def hash(self, m, cache={}):
+        if m in cache:
+            return cache[m]
         t = ("%2.2f" % m[2]).encode("utf-8")
         bts = m[1] + b"||" + t + b"||" + m[3] # TODO: fix formatting
-        return sha256(bts).hexdigest()
+        h = sha256(bts).hexdigest()
+
+        if len(cache) > 1000:
+            cache.clear()
+        cache[m] = h
+        return h
 
 
     def prepared(self, m, v, n, M=None):

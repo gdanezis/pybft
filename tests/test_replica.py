@@ -560,3 +560,6 @@ def test_view_change_cost():
 
         assert len(seen_replies) == 2
         # print(message_numbers)
+
+if __name__ == "__main__":
+    test_driver_for_f3_many()
