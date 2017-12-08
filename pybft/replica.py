@@ -6,6 +6,7 @@ from collections import defaultdict
 from hashlib import sha256
 from collections import Counter
 
+from .bftinset import inset
 
 NoneT = lambda: None
 
@@ -32,9 +33,16 @@ class replica(object):
         if M is None:
             M = self.in_i
 
-        for msg in M:
-            if msg[0] == xtype:
-                yield msg
+        try:
+            #for m in M.sets[xtype]:
+            #    yield m
+            return M.sets[xtype]
+        except AttributeError:
+            #for msg in M:
+            #    if msg[0] == xtype:
+            #        yield msg
+            return (item for item in M if item[0] == xtype) 
+
 
 
     def __init__(self,i, R):
@@ -43,7 +51,7 @@ class replica(object):
         self.f = (R - 1) // 3
         self.vali = None # v_0
         self.view_i = 0
-        self.in_i = set()
+        self.in_i = inset()
 
         self.out_i = set()
         self.last_rep_i = defaultdict(NoneT)
@@ -142,14 +150,13 @@ class replica(object):
 
         cond = (self._PREPREPARE, v, n, m, self.primary(v)) in M
         
-        others = set()
         hm = self.hash(m)
-        for mx in self.filter_type(self._PREPARE, M): 
-            if mx[:4] == (self._PREPARE, v, n, hm):
-                if mx[4] != self.primary(v):
-                    others.add(mx[4])
+        num = 0
+        for r in range(self.R):
+            if (self._PREPARE, v, n, hm, r) in M and r != self.primary(v):
+                num += 1
 
-        cond &= len(others) >= 2*self.f
+        cond &= num >= 2*self.f
         return cond
 
 
@@ -160,16 +167,17 @@ class replica(object):
         cond = False
         for mx in self.filter_type(self._PREPREPARE, M):
             (_, vp, np, mp, jp) = mx
-            cond |= (np, mp) == (n, m) and (jp == self.primary(vp))
+            cond |= (np, mp, jp) == (n, m, self.primary(vp))
         cond |= m in M
         
-        others = set()
         hm = self.hash(m)
-        for mx in M: 
-            if mx[:4] == (self._COMMIT, v, n, hm):
-                others.add(mx[4])
 
-        cond &= len(others) >= 2*self.f + 1
+        num = 0
+        for r in range(self.R):
+            if (self._COMMIT, v, n, hm, r) in M:
+                num += 1
+
+        cond &= num >= 2*self.f + 1
         return cond
 
 
@@ -394,7 +402,8 @@ class replica(object):
             P.add(prep)
             (_, vi2,ni2, mi2, _) = prep
 
-            for mx in self.filter_type(self._PREPARE, self.in_i): 
+            # TODO: check if this should be over in_i or M?
+            for mx in self.filter_type(self._PREPARE, M): 
                 if mx[:4] == (self._PREPARE, vi2, ni2, self.hash(mi2)):
                     if mx[4] != self.primary(vi2):
                         P.add(mx)
@@ -501,7 +510,7 @@ class replica(object):
             for req in list(self.filter_type(self._REQUEST)):
                 (_, o, t, c) = req
                 if c in self.last_rep_ti and t <= self.last_rep_ti[c]:
-                    self.in_i.remove(req)
+                    self.in_i.discard(req)
 
             return True
         else:
@@ -649,51 +658,17 @@ class replica(object):
         all_preps = sorted(all_preps, key=lambda xmsg: xmsg[2])
 
         for (_, vx, nx, mx, _) in all_preps:
-                self.send_commit(mx,vx,nx)
+                if self.in_i.hint(self._PREPARE):
+                    self.send_commit(mx,vx,nx)
                 self.execute(mx,vx,nx)
 
         # Garbage collect
-        self.garbage_collect()
+        if self.in_i.hint(self._CHECKPOINT):
+            self.garbage_collect()
+
+        self.in_i.reset_hints()
 
 
     def unhandled_requests(self):
         unhand = list(self.filter_type(self._REQUEST))
         return unhand
-            
-    def _debug_status(self, request):
-        # First check out if the request has been received:
-        print("\nPeer %s (view: %s) REQ: %s" % (self.i, self.view_i, str(request)))
-        accounted = set()
-        for msg in self.in_i:
-            if msg[0] == self._PREPREPARE and msg[3] == request:
-                accounted.add( (msg[1], msg[2]) )
-                print("** %s" % (str(msg)))
-                if self.prepared(request, msg[1], msg[2]):
-                    print("        ** PREPARED **")
-
-                # How many prepeared do we have
-                for Pmsg in self.in_i:
-                    if Pmsg[0] == self._PREPARE and Pmsg[1:3] == msg[1:3]:
-                        print("        %s" % str(Pmsg))
-
-                commited = False
-                if self.commited(request, msg[1], msg[2]):
-                    print("        ** COMMITED **")
-                    commited = True
-
-                # How many prepeared do we have
-                for Pmsg in self.in_i:
-                    if Pmsg[0] == self._COMMIT and Pmsg[1:3] == msg[1:3]:
-                        print("        %s" % str(Pmsg))
-
-                if commited:
-                    if self.last_exec_i >= msg[2]:
-                        print("        ** EXECUTED (%s) **" % self.last_exec_i)
-                    else:
-                        print("        ** NOT EXECUTED (%s) **" % self.last_exec_i)
-            
-        # How many prepeared do we have
-        for Pmsg in self.in_i:
-            if Pmsg[0] == self._PREPARE and Pmsg[3] == self.hash(request):
-                if Pmsg[1:3] not in accounted:
-                    print("STRAY: %s" % str(Pmsg))
