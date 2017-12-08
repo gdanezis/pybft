@@ -561,5 +561,10 @@ def test_view_change_cost():
         assert len(seen_replies) == 2
         # print(message_numbers)
 
+
+import time
 if __name__ == "__main__":
+    t0 = time.clock()
     test_driver_for_f3_many()
+    t1 = time.clock()
+    print("Total time: %5.5fms" % ((t1 - t0) * 1000))

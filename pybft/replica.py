@@ -34,13 +34,8 @@ class replica(object):
             M = self.in_i
 
         try:
-            #for m in M.sets[xtype]:
-            #    yield m
             return M.sets[xtype]
         except AttributeError:
-            #for msg in M:
-            #    if msg[0] == xtype:
-            #        yield msg
             return (item for item in M if item[0] == xtype) 
 
 
@@ -147,16 +142,18 @@ class replica(object):
     def prepared(self, m, v, n, M=None):
         if M is None:
             M = self.in_i
-
-        cond = (self._PREPREPARE, v, n, m, self.primary(v)) in M
         
         hm = self.hash(m)
+        primary = self.primary(v)
         num = 0
         for r in range(self.R):
-            if (self._PREPARE, v, n, hm, r) in M and r != self.primary(v):
+            if (self._PREPARE, v, n, hm, r) in M and r != primary:
                 num += 1
 
-        cond &= num >= 2*self.f
+        cond = num >= 2*self.f
+
+        cond = cond and (self._PREPREPARE, v, n, m, primary) in M
+
         return cond
 
 
@@ -164,20 +161,21 @@ class replica(object):
         if M is None:
             M = self.in_i
 
+        num = 0
+        hm = self.hash(m)
+        for r in range(self.R):
+            if (self._COMMIT, v, n, hm, r) in M:
+                num += 1
+
+        cond = num >= 2*self.f + 1
+        if not cond: return cond
+
         cond = False
         for mx in self.filter_type(self._PREPREPARE, M):
             (_, vp, np, mp, jp) = mx
             cond |= (np, mp, jp) == (n, m, self.primary(vp))
         cond |= m in M
         
-        hm = self.hash(m)
-
-        num = 0
-        for r in range(self.R):
-            if (self._COMMIT, v, n, hm, r) in M:
-                num += 1
-
-        cond &= num >= 2*self.f + 1
         return cond
 
 
@@ -660,7 +658,8 @@ class replica(object):
         for (_, vx, nx, mx, _) in all_preps:
                 if self.in_i.hint(self._PREPARE):
                     self.send_commit(mx,vx,nx)
-                self.execute(mx,vx,nx)
+                if self.last_exec_i + 1 == nx and (self.in_i.hint(self._PREPREPARE) or self.in_i.hint(self._COMMIT)):
+                    self.execute(mx,vx,nx)
 
         # Garbage collect
         if self.in_i.hint(self._CHECKPOINT):
